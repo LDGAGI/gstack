@@ -14,6 +14,9 @@
     </div>
   </div>
 
+  <!-- Browser tab bar -->
+  <div class="browser-tabs" id="browser-tabs" style="display:none"></div>
+
   <!-- Chat Tab (default, full height) -->
   <main id="tab-chat" class="tab-content active">
     <div class="chat-messages" id="chat-messages">
@@ -127,12 +130,13 @@
 
   <!-- Experimental chat banner (shown when chatEnabled) -->
   <div id="experimental-banner" class="experimental-banner" style="display: none;">
-    &#x26A0; Standalone mode &mdash; this is a separate agent from your workspace
+    Browser co-pilot &mdash; controls this browser, reports back to your workspace
   </div>
 
   <!-- Command Bar -->
   <div class="command-bar">
-    <input type="text" class="command-input" id="command-input" placeholder="Message Claude Code..." autocomplete="off" spellcheck="false">
+    <button class="stop-btn" id="stop-agent-btn" title="Stop agent" style="display: none;">&#x25A0;</button>
+    <input type="text" class="command-input" id="command-input" placeholder="Ask about this page..." autocomplete="off" spellcheck="false">
     <button class="send-btn" id="send-btn" title="Send">&#x2191;</button>
   </div>
 

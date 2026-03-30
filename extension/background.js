@@ -378,6 +378,22 @@ chrome.runtime.onInstalled.addListener(async () => {
   }, 1000);
 });
 
+// ─── Tab Switch Detection ────────────────────────────────────────
+// Notify sidepanel instantly when the user switches tabs in the browser.
+// This is faster than polling — the sidebar swaps chat context immediately.
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  chrome.tabs.get(activeInfo.tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab) return;
+    chrome.runtime.sendMessage({
+      type: 'browserTabActivated',
+      tabId: activeInfo.tabId,
+      url: tab.url || '',
+      title: tab.title || '',
+    }).catch(() => {}); // sidepanel may not be open
+  });
+});
+
 // ─── Startup ────────────────────────────────────────────────────
 
 // Load auth token BEFORE first health poll (token no longer in /health response)

@@ -262,16 +262,27 @@ body::after {
 }
 .agent-tool {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  background: var(--bg-base);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  font-size: 10px;
-  font-family: var(--font-mono);
-  overflow: hidden;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(245, 158, 11, 0.06);
+  border-left: 2px solid var(--amber-500);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  font-family: var(--font-system);
+  margin: 2px 0;
 }
+.tool-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.tool-description {
+  color: var(--text-body);
+  line-height: 1.5;
+  word-break: break-word;
+}
+/* Legacy classes kept for compat */
 .tool-name {
   color: var(--amber-500);
   font-weight: 600;
@@ -285,9 +296,10 @@ body::after {
 }
 .agent-text {
   color: var(--text-body);
-  font-size: 11px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 1.5;
   word-break: break-word;
+  padding: 2px 0;
 }
 .agent-text pre {
   background: var(--bg-base);
@@ -637,6 +649,22 @@ body::after {
   opacity: 0.3;
   cursor: not-allowed;
 }
+.stop-btn {
+  width: 26px;
+  height: 26px;
+  background: var(--error);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 26px;
+  text-align: center;
+}
+.stop-btn:hover { background: #dc2626; }
+.stop-btn:active { transform: scale(0.93); }
 
 /* ─── Footer ──────────────────────────────────────────── */
 footer {
@@ -686,15 +714,53 @@ footer {
 
 /* ─── Experimental Banner ─────────────────────────────── */
 .experimental-banner {
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  color: #F59E0B;
-  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  color: var(--zinc-400);
+  padding: 6px 12px;
   border-radius: 6px;
-  font-size: 12px;
-  margin: 8px 12px;
+  font-size: 11px;
+  margin: 6px 12px;
   text-align: center;
   flex-shrink: 0;
+}
+
+/* ─── Browser Tab Bar ─────────────────────────────────── */
+.browser-tabs {
+  display: flex;
+  gap: 1px;
+  padding: 4px 8px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+.browser-tabs::-webkit-scrollbar { display: none; }
+.browser-tab {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: var(--font-system);
+  color: var(--text-meta);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  transition: background 100ms, color 100ms;
+}
+.browser-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-label);
+}
+.browser-tab.active {
+  background: var(--bg-surface);
+  color: var(--text-body);
+  border-color: var(--border);
 }
 
 /* ─── Inspector Tab ──────────────────────────────────── */

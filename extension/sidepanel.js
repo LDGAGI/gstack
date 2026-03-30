@@ -17,6 +17,10 @@ let serverToken = null;
 let chatLineCount = 0;
 let chatPollInterval = null;
 let connState = 'disconnected'; // disconnected | connected | reconnecting | dead
+let lastOptimisticMsg = null; // track optimistically rendered user msg to avoid dupes
+let sidebarActiveTabId = null; // which browser tab's chat we're showing
+const chatLineCountByTab = {}; // tabId -> last seen chatLineCount
+const chatDomByTab = {}; // tabId -> saved innerHTML
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 const MAX_RECONNECT_ATTEMPTS = 30; // 30 * 2s = 60s before showing "dead"
@@ -103,8 +107,12 @@ function addChatEntry(entry) {
   const welcome = chatMessages.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
 
-  // User messages → chat bubble
+  // User messages → chat bubble (skip if we already rendered it optimistically)
   if (entry.role === 'user') {
+    if (lastOptimisticMsg === entry.message) {
+      lastOptimisticMsg = null; // consumed — don't skip next identical msg
+      return;
+    }
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble user';
     bubble.innerHTML = `${escapeHtml(entry.message)}<span class="chat-time">${formatChatTime(entry.ts)}</span>`;
@@ -136,6 +144,13 @@ function addChatEntry(entry) {
 
 function handleAgentEvent(entry) {
   if (entry.type === 'agent_start') {
+    // If we already showed thinking dots optimistically in sendMessage(),
+    // don't duplicate. Just ensure fast polling is on.
+    if (agentContainer && document.getElementById('agent-thinking')) {
+      startFastPoll();
+      updateStopButton(true);
+      return;
+    }
     // Create a new agent response container
     agentText = '';
     agentContainer = document.createElement('div');
@@ -150,6 +165,8 @@ function handleAgentEvent(entry) {
     thinking.innerHTML = '<span class="thinking-dot"></span><span class="thinking-dot"></span><span class="thinking-dot"></span>';
     agentContainer.appendChild(thinking);
     agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    startFastPoll();
+    updateStopButton(true);
     return;
   }
 
@@ -157,6 +174,8 @@ function handleAgentEvent(entry) {
     // Remove thinking indicator
     const thinking = document.getElementById('agent-thinking');
     if (thinking) thinking.remove();
+    updateStopButton(false);
+    stopFastPoll();
     // Add timestamp
     if (agentContainer) {
       const ts = document.createElement('span');
@@ -172,6 +191,8 @@ function handleAgentEvent(entry) {
   if (entry.type === 'agent_error') {
     const thinking = document.getElementById('agent-thinking');
     if (thinking) thinking.remove();
+    updateStopButton(false);
+    stopFastPoll();
     if (!agentContainer) {
       agentContainer = document.createElement('div');
       agentContainer.className = 'agent-response';
@@ -200,7 +221,11 @@ function handleAgentEvent(entry) {
     toolEl.className = 'agent-tool';
     const toolName = entry.tool || 'Tool';
     const toolInput = entry.input || '';
-    toolEl.innerHTML = `<span class="tool-name">${escapeHtml(toolName)}</span> <span class="tool-input">${escapeHtml(toolInput)}</span>`;
+
+    // Use the verbose description as the primary text
+    // The tool name becomes a subtle badge
+    const toolIcon = toolName === 'Bash' ? '▸' : toolName === 'Read' ? '📄' : toolName === 'Grep' ? '🔍' : toolName === 'Glob' ? '📁' : '⚡';
+    toolEl.innerHTML = `<span class="tool-icon">${toolIcon}</span> <span class="tool-description">${escapeHtml(toolInput)}</span>`;
     agentContainer.appendChild(toolEl);
     agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
     return;
@@ -251,8 +276,34 @@ async function sendMessage() {
   commandInput.disabled = true;
   sendBtn.disabled = true;
 
+  // Show user bubble + thinking dots IMMEDIATELY — don't wait for poll.
+  // This eliminates up to 1000ms of perceived latency.
+  lastOptimisticMsg = msg;
+  const welcome = chatMessages.querySelector('.chat-welcome');
+  if (welcome) welcome.remove();
+  const userBubble = document.createElement('div');
+  userBubble.className = 'chat-bubble user';
+  userBubble.innerHTML = `${escapeHtml(msg)}<span class="chat-time">${formatChatTime(new Date().toISOString())}</span>`;
+  chatMessages.appendChild(userBubble);
+
+  agentText = '';
+  agentContainer = document.createElement('div');
+  agentContainer.className = 'agent-response';
+  agentTextEl = null;
+  chatMessages.appendChild(agentContainer);
+  const thinking = document.createElement('div');
+  thinking.className = 'agent-thinking';
+  thinking.id = 'agent-thinking';
+  thinking.innerHTML = '<span class="thinking-dot"></span><span class="thinking-dot"></span><span class="thinking-dot"></span>';
+  agentContainer.appendChild(thinking);
+  agentContainer.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  updateStopButton(true);
+
+  // Speed up polling while agent is working
+  startFastPoll();
+
   const result = await new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'sidebar-command', message: msg }, resolve);
+    chrome.runtime.sendMessage({ type: 'sidebar-command', message: msg, tabId: sidebarActiveTabId }, resolve);
   });
 
   commandInput.disabled = false;
@@ -260,7 +311,7 @@ async function sendMessage() {
   commandInput.focus();
 
   if (result?.ok) {
-    // Immediately poll to show the user's own message
+    // Poll immediately to sync server state
     pollChat();
   } else {
     commandInput.classList.add('error');
@@ -286,6 +337,7 @@ commandInput.addEventListener('keydown', (e) => {
 });
 
 sendBtn.addEventListener('click', sendMessage);
+document.getElementById('stop-agent-btn').addEventListener('click', stopAgent);
 
 // Poll for new chat messages
 let initialLoadDone = false;
@@ -293,16 +345,25 @@ let initialLoadDone = false;
 async function pollChat() {
   if (!serverUrl || !serverToken) return;
   try {
-    const resp = await fetch(`${serverUrl}/sidebar-chat?after=${chatLineCount}`, {
+    // Request chat for the currently displayed tab
+    const tabParam = sidebarActiveTabId !== null ? `&tabId=${sidebarActiveTabId}` : '';
+    const resp = await fetch(`${serverUrl}/sidebar-chat?after=${chatLineCount}${tabParam}`, {
       headers: authHeaders(),
       signal: AbortSignal.timeout(3000),
     });
     if (!resp.ok) return;
     const data = await resp.json();
 
+    // Detect tab switch from server — swap chat context
+    if (data.activeTabId !== undefined && data.activeTabId !== sidebarActiveTabId) {
+      switchChatTab(data.activeTabId);
+      return; // switchChatTab triggers a fresh poll
+    }
+
     // First successful poll — hide loading spinner
     if (!initialLoadDone) {
       initialLoadDone = true;
+      sidebarActiveTabId = data.activeTabId ?? null;
       const loading = document.getElementById('chat-loading');
       const welcome = document.getElementById('chat-welcome');
       if (loading) loading.style.display = 'none';
@@ -319,6 +380,181 @@ async function pollChat() {
       }
       chatLineCount = data.total;
     }
+
+    // Clean up orphaned thinking indicators after replay.
+    const thinking = document.getElementById('agent-thinking');
+    if (thinking && data.agentStatus !== 'processing') {
+      thinking.remove();
+      if (agentContainer) {
+        const notice = document.createElement('div');
+        notice.className = 'agent-text';
+        notice.style.color = 'var(--text-meta)';
+        notice.style.fontStyle = 'italic';
+        notice.textContent = '(session ended)';
+        agentContainer.appendChild(notice);
+        agentContainer = null;
+        agentTextEl = null;
+      }
+    }
+
+    // Show/hide stop button based on agent status
+    updateStopButton(data.agentStatus === 'processing');
+  } catch {}
+}
+
+/** Switch the sidebar to show a different tab's chat context */
+function switchChatTab(newTabId) {
+  if (newTabId === sidebarActiveTabId) return;
+
+  // Save current tab's chat DOM + scroll position
+  if (sidebarActiveTabId !== null) {
+    chatDomByTab[sidebarActiveTabId] = chatMessages.innerHTML;
+    chatLineCountByTab[sidebarActiveTabId] = chatLineCount;
+  }
+
+  sidebarActiveTabId = newTabId;
+
+  // Restore saved chat for new tab, or show welcome
+  if (chatDomByTab[newTabId]) {
+    chatMessages.innerHTML = chatDomByTab[newTabId];
+    chatLineCount = chatLineCountByTab[newTabId] || 0;
+  } else {
+    chatMessages.innerHTML = `
+      <div class="chat-welcome" id="chat-welcome">
+        <div class="chat-welcome-icon">G</div>
+        <p>Send a message about this page.</p>
+        <p class="muted">Each tab has its own conversation.</p>
+      </div>`;
+    chatLineCount = 0;
+  }
+
+  // Reset agent state for this tab
+  agentContainer = null;
+  agentTextEl = null;
+  agentText = '';
+
+  // Immediately poll the new tab's chat
+  pollChat();
+}
+
+function updateStopButton(agentRunning) {
+  const stopBtn = document.getElementById('stop-agent-btn');
+  if (!stopBtn) return;
+  stopBtn.style.display = agentRunning ? '' : 'none';
+}
+
+async function stopAgent() {
+  if (!serverUrl) return;
+  try {
+    await fetch(`${serverUrl}/sidebar-agent/stop`, { method: 'POST', headers: authHeaders() });
+  } catch {}
+  // Immediately clean up UI
+  const thinking = document.getElementById('agent-thinking');
+  if (thinking) thinking.remove();
+  if (agentContainer) {
+    const notice = document.createElement('div');
+    notice.className = 'agent-text';
+    notice.style.color = 'var(--text-meta)';
+    notice.style.fontStyle = 'italic';
+    notice.textContent = 'Stopped';
+    agentContainer.appendChild(notice);
+    agentContainer = null;
+    agentTextEl = null;
+  }
+  updateStopButton(false);
+  stopFastPoll();
+}
+
+// ─── Adaptive poll speed ─────────────────────────────────────────
+// 300ms while agent is working (fast first-token), 1000ms when idle.
+const FAST_POLL_MS = 300;
+const SLOW_POLL_MS = 1000;
+
+function startFastPoll() {
+  if (chatPollInterval) clearInterval(chatPollInterval);
+  chatPollInterval = setInterval(pollChat, FAST_POLL_MS);
+}
+
+function stopFastPoll() {
+  if (chatPollInterval) clearInterval(chatPollInterval);
+  chatPollInterval = setInterval(pollChat, SLOW_POLL_MS);
+}
+
+// ─── Browser Tab Bar ─────────────────────────────────────────────
+let tabPollInterval = null;
+let lastTabJson = '';
+
+async function pollTabs() {
+  if (!serverUrl || !serverToken) return;
+  try {
+    // Tell the server which Chrome tab the user is actually looking at.
+    // This syncs manual tab switches in the browser → server activeTabId.
+    let activeTabUrl = null;
+    try {
+      const chromeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      activeTabUrl = chromeTabs?.[0]?.url || null;
+    } catch {}
+
+    const resp = await fetch(`${serverUrl}/sidebar-tabs${activeTabUrl ? '?activeUrl=' + encodeURIComponent(activeTabUrl) : ''}`, {
+      headers: authHeaders(),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.tabs) return;
+
+    // Only re-render if tabs changed
+    const json = JSON.stringify(data.tabs);
+    if (json === lastTabJson) return;
+    lastTabJson = json;
+
+    renderTabBar(data.tabs);
+  } catch {}
+}
+
+function renderTabBar(tabs) {
+  const bar = document.getElementById('browser-tabs');
+  if (!bar) return;
+
+  if (!tabs || tabs.length <= 1) {
+    bar.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = '';
+  bar.innerHTML = '';
+
+  for (const tab of tabs) {
+    const el = document.createElement('div');
+    el.className = 'browser-tab' + (tab.active ? ' active' : '');
+    el.title = tab.url || '';
+
+    // Show favicon-style domain + title
+    let label = tab.title || '';
+    if (!label && tab.url) {
+      try { label = new URL(tab.url).hostname; } catch { label = tab.url; }
+    }
+    if (label.length > 20) label = label.slice(0, 20) + '…';
+
+    el.textContent = label || `Tab ${tab.id}`;
+    el.dataset.tabId = tab.id;
+
+    el.addEventListener('click', () => switchBrowserTab(tab.id));
+    bar.appendChild(el);
+  }
+}
+
+async function switchBrowserTab(tabId) {
+  if (!serverUrl) return;
+  try {
+    await fetch(`${serverUrl}/sidebar-tabs/switch`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ id: tabId }),
+    });
+    // Switch chat context + re-poll tabs
+    switchChatTab(tabId);
+    pollTabs();
   } catch {}
 }
 
@@ -960,12 +1196,17 @@ function updateConnection(url, token) {
     connectSSE();
     connectInspectorSSE();
     if (chatPollInterval) clearInterval(chatPollInterval);
-    chatPollInterval = setInterval(pollChat, 1000);
+    chatPollInterval = setInterval(pollChat, SLOW_POLL_MS);
     pollChat();
+    // Poll browser tabs every 2s (lightweight, just tab list)
+    if (tabPollInterval) clearInterval(tabPollInterval);
+    tabPollInterval = setInterval(pollTabs, 2000);
+    pollTabs();
   } else {
     document.getElementById('footer-dot').className = 'dot';
     document.getElementById('footer-port').textContent = '';
     if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
+    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
     if (wasConnected) {
       startReconnect();
     }
@@ -1059,6 +1300,25 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'pickerCancelled') {
     inspectorPickerActive = false;
     inspectorPickBtn.classList.remove('active');
+  }
+  // Instant tab switch — background.js fires this on chrome.tabs.onActivated
+  if (msg.type === 'browserTabActivated') {
+    // Tell the server which tab is now active, then switch chat context
+    if (serverUrl && serverToken) {
+      fetch(`${serverUrl}/sidebar-tabs?activeUrl=${encodeURIComponent(msg.url || '')}`, {
+        headers: authHeaders(),
+        signal: AbortSignal.timeout(2000),
+      }).then(r => r.json()).then(data => {
+        if (data.tabs) {
+          renderTabBar(data.tabs);
+          // Find the server-side tab ID for this Chrome tab
+          const activeTab = data.tabs.find(t => t.active);
+          if (activeTab && activeTab.id !== sidebarActiveTabId) {
+            switchChatTab(activeTab.id);
+          }
+        }
+      }).catch(() => {});
+    }
   }
 });
 
