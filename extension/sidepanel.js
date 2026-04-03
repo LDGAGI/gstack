@@ -375,7 +375,10 @@ async function pollChat() {
       headers: authHeaders(),
       signal: AbortSignal.timeout(3000),
     });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      console.warn(`[gstack sidebar] Chat poll failed: ${resp.status} ${resp.statusText}`);
+      return;
+    }
     const data = await resp.json();
 
     // Detect tab switch from server — swap chat context
@@ -417,7 +420,9 @@ async function pollChat() {
 
     // Show/hide stop button based on agent status
     updateStopButton(data.agentStatus === 'processing');
-  } catch {}
+  } catch (err) {
+    console.error('[gstack sidebar] Chat poll error:', err.message);
+  }
 }
 
 /** Switch the sidebar to show a different tab's chat context */
@@ -464,8 +469,11 @@ function updateStopButton(agentRunning) {
 async function stopAgent() {
   if (!serverUrl) return;
   try {
-    await fetch(`${serverUrl}/sidebar-agent/stop`, { method: 'POST', headers: authHeaders() });
-  } catch {}
+    const resp = await fetch(`${serverUrl}/sidebar-agent/stop`, { method: 'POST', headers: authHeaders() });
+    if (!resp.ok) console.warn(`[gstack sidebar] Stop agent failed: ${resp.status}`);
+  } catch (err) {
+    console.error('[gstack sidebar] Stop agent error:', err.message);
+  }
   // Immediately clean up UI
   const thinking = document.getElementById('agent-thinking');
   if (thinking) thinking.remove();
@@ -511,13 +519,18 @@ async function pollTabs() {
     try {
       const chromeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
       activeTabUrl = chromeTabs?.[0]?.url || null;
-    } catch {}
+    } catch (err) {
+      console.debug('[gstack sidebar] Failed to get active tab URL:', err.message);
+    }
 
     const resp = await fetch(`${serverUrl}/sidebar-tabs${activeTabUrl ? '?activeUrl=' + encodeURIComponent(activeTabUrl) : ''}`, {
       headers: authHeaders(),
       signal: AbortSignal.timeout(2000),
     });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      console.warn(`[gstack sidebar] Tab poll failed: ${resp.status} ${resp.statusText}`);
+      return;
+    }
     const data = await resp.json();
     if (!data.tabs) return;
 
@@ -527,7 +540,9 @@ async function pollTabs() {
     lastTabJson = json;
 
     renderTabBar(data.tabs);
-  } catch {}
+  } catch (err) {
+    console.error('[gstack sidebar] Tab poll error:', err.message);
+  }
 }
 
 function renderTabBar(tabs) {
@@ -573,7 +588,9 @@ async function switchBrowserTab(tabId) {
     // Switch chat context + re-poll tabs
     switchChatTab(tabId);
     pollTabs();
-  } catch {}
+  } catch (err) {
+    console.error('[gstack sidebar] Failed to switch browser tab:', err.message);
+  }
 }
 
 // ─── Clear Chat ─────────────────────────────────────────────────
@@ -581,8 +598,11 @@ async function switchBrowserTab(tabId) {
 document.getElementById('clear-chat').addEventListener('click', async () => {
   if (!serverUrl) return;
   try {
-    await fetch(`${serverUrl}/sidebar-chat/clear`, { method: 'POST', headers: authHeaders() });
-  } catch {}
+    const resp = await fetch(`${serverUrl}/sidebar-chat/clear`, { method: 'POST', headers: authHeaders() });
+    if (!resp.ok) console.warn(`[gstack sidebar] Clear chat failed: ${resp.status}`);
+  } catch (err) {
+    console.error('[gstack sidebar] Clear chat error:', err.message);
+  }
   // Reset local state
   chatLineCount = 0;
   renderedEntryIds.clear();
@@ -734,7 +754,9 @@ function connectSSE() {
   eventSource = new EventSource(url);
 
   eventSource.addEventListener('activity', (e) => {
-    try { addEntry(JSON.parse(e.data)); } catch {}
+    try { addEntry(JSON.parse(e.data)); } catch (err) {
+      console.error('[gstack sidebar] Failed to parse activity event:', err.message);
+    }
   });
 
   eventSource.addEventListener('gap', (e) => {
@@ -745,7 +767,9 @@ function connectSSE() {
       banner.className = 'gap-banner';
       banner.textContent = `Missed ${data.availableFrom - data.gapFrom} events`;
       feed.appendChild(banner);
-    } catch {}
+    } catch (err) {
+      console.error('[gstack sidebar] Failed to parse gap event:', err.message);
+    }
   });
 }
 
@@ -780,7 +804,9 @@ async function fetchRefs() {
       </div>
     `).join('');
     footer.textContent = `${data.refs.length} refs`;
-  } catch {}
+  } catch (err) {
+    console.error('[gstack sidebar] Failed to fetch refs:', err.message);
+  }
 }
 
 // ─── Inspector Tab ──────────────────────────────────────────────
@@ -1292,15 +1318,17 @@ function connectInspectorSSE() {
       try {
         const data = JSON.parse(e.data);
         inspectorShowData(data);
-      } catch {}
+      } catch (err) {
+        console.error('[gstack sidebar] Failed to parse inspectResult:', err.message);
+      }
     });
 
     inspectorSSE.addEventListener('error', () => {
       // SSE connection failed — inspector works without it (basic mode)
       if (inspectorSSE) { inspectorSSE.close(); inspectorSSE = null; }
     });
-  } catch {
-    // SSE not available — that's fine
+  } catch (err) {
+    console.debug('[gstack sidebar] Inspector SSE not available:', err.message);
   }
 }
 
