@@ -348,7 +348,14 @@ export async function handleMetaCommand(
 
     // ─── Snapshot ─────────────────────────────────────
     case 'snapshot': {
-      const snapshotResult = await handleSnapshot(args, bm);
+      const isScoped = tokenInfo && tokenInfo.clientId !== 'root';
+      const snapshotResult = await handleSnapshot(args, bm, {
+        splitForScoped: !!isScoped,
+      });
+      // Scoped tokens get split format (refs outside envelope); root gets basic wrapping
+      if (isScoped) {
+        return snapshotResult; // already has envelope from split format
+      }
       return wrapUntrustedContent(snapshotResult, bm.getCurrentUrl());
     }
 
@@ -361,7 +368,11 @@ export async function handleMetaCommand(
     case 'resume': {
       bm.resume();
       // Re-snapshot to capture current page state after human interaction
-      const snapshot = await handleSnapshot(['-i'], bm);
+      const isScoped2 = tokenInfo && tokenInfo.clientId !== 'root';
+      const snapshot = await handleSnapshot(['-i'], bm, { splitForScoped: !!isScoped2 });
+      if (isScoped2) {
+        return `RESUMED\n${snapshot}`;
+      }
       return `RESUMED\n${wrapUntrustedContent(snapshot, bm.getCurrentUrl())}`;
     }
 
