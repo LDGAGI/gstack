@@ -1792,7 +1792,23 @@ async function start() {
         return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
 
-      // ─── Auth-required endpoints ──────────────────────────────────
+      // ─── Command endpoint (accepts both root AND scoped tokens) ────
+      // Must be checked BEFORE the blanket root-only auth gate below,
+      // because scoped tokens from /connect are valid for /command.
+      if (url.pathname === '/command' && req.method === 'POST') {
+        const tokenInfo = getTokenInfo(req);
+        if (!tokenInfo) {
+          return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        resetIdleTimer();
+        const body = await req.json();
+        return handleCommand(body, tokenInfo);
+      }
+
+      // ─── Auth-required endpoints (root token only) ─────────────────
 
       if (!validateAuth(req)) {
         return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -1950,22 +1966,6 @@ async function start() {
             'Connection': 'keep-alive',
           },
         });
-      }
-
-      // ─── Command endpoint ──────────────────────────────────────────
-
-      if (url.pathname === '/command' && req.method === 'POST') {
-        // Accept both root token and scoped tokens
-        const tokenInfo = getTokenInfo(req);
-        if (!tokenInfo) {
-          return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        resetIdleTimer();  // Only commands reset idle timer
-        const body = await req.json();
-        return handleCommand(body, tokenInfo);
       }
 
       return new Response('Not found', { status: 404 });
